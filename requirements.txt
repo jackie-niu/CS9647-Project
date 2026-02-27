@@ -1,0 +1,10 @@
+transformers 
+datasets 
+accelerate 
+evaluate 
+scikit-learn 
+pandas 
+numpy 
+tqdm 
+newspaper3k 
+lxml_html_clean
