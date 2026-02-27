@@ -3,7 +3,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 def load_or_build_raw_fakenewsnet(raw_csv_cache_path: str) -> pd.DataFrame:
-    # Load raw dataset from cache if exists, else build from FakeNewsNet repo CSVs and cache it. 
+    # Load raw dataset from cache if exists, else build from FakeNewsNet repo CSVs and cache it
     if os.path.exists(raw_csv_cache_path):
         print(f"[data] Loading cached raw dataset: {raw_csv_cache_path}")
         return pd.read_csv(raw_csv_cache_path)
@@ -38,7 +38,7 @@ def load_or_build_raw_fakenewsnet(raw_csv_cache_path: str) -> pd.DataFrame:
     return data
 
 def filter_and_sample(data: pd.DataFrame, subset: str, n: int, seed: int) -> pd.DataFrame:
-    # Filter dataset by subset and sample n rows if n > 0 and less than total. Subset can be 'politifact', 'gossipcop', or 'both'.
+    # Filter dataset by subset and sample n rows if n > 0 and less than total. Subset can be 'politifact', 'gossipcop', or 'both'
     df = data.copy()
     if subset in ("politifact", "gossipcop"):
         df = df[df["source"] == subset].copy()
@@ -55,7 +55,7 @@ def filter_and_sample(data: pd.DataFrame, subset: str, n: int, seed: int) -> pd.
     df = df.dropna(subset=["url"]).reset_index(drop=True)
     return df
 
-# Split the dataset into train/val/test with stratification on label, using the provided seed for reproducibility.
+# Split the dataset into train/val/test with stratification on label, using the provided seed for reproducibility
 def split_train_val_test(df: pd.DataFrame, seed: int):
     train_df, temp_df = train_test_split(
         df, test_size=0.30, random_state=seed, stratify=df["label"]
