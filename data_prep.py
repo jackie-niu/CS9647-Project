@@ -30,7 +30,7 @@ def load_or_build_raw_fakenewsnet(raw_csv_cache_path: str) -> pd.DataFrame:
     data = pd.concat(dfs, ignore_index=True)
 
     # Keep only relevant columns if they exist, and save to cache
-    keep_cols = [c for c in ["id", "title", "url", "tweet_ids", "source", "label"] if c in data.columns]
+    keep_cols = [c for c in ["id", "title", "news_url", "tweet_ids", "source", "label"] if c in data.columns]
     data = data[keep_cols].copy()
 
     data.to_csv(raw_csv_cache_path, index=False)
@@ -52,7 +52,7 @@ def filter_and_sample(data: pd.DataFrame, subset: str, n: int, seed: int) -> pd.
         df = df.reset_index(drop=True)
 
     # must have url
-    df = df.dropna(subset=["url"]).reset_index(drop=True)
+    df = df.dropna(subset=["news_url"]).reset_index(drop=True)
     return df
 
 # Split the dataset into train/val/test with stratification on label, using the provided seed for reproducibility
