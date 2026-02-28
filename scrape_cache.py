@@ -18,13 +18,13 @@ def fetch_article_text(url: str) -> str | None:
 
 def align_to_sample(scraped: pd.DataFrame, sample: pd.DataFrame) -> pd.DataFrame:
     # Align scraped data to the sample by URL. If 'text' column is missing in scraped, add it as NA
-    if "url" not in sample.columns:
-        raise ValueError("Sample must contain 'url' column.")
+    if "news_url" not in sample.columns:
+        raise ValueError("Sample must contain 'news_url' column.")
     if "text" not in scraped.columns:
         scraped = scraped.copy()
         scraped["text"] = pd.NA
-    scraped_urls = scraped[["url", "text"]].drop_duplicates()
-    merged = sample.merge(scraped_urls, on="url", how="left")
+    scraped_urls = scraped[["news_url", "text"]].drop_duplicates()
+    merged = sample.merge(scraped_urls, on="news_url", how="left")
     return merged
 
 def scrape_with_resume(sample: pd.DataFrame, scraped_cache_path: str, partial_cache_path: str, save_every: int = 50,) -> pd.DataFrame:
@@ -50,8 +50,8 @@ def scrape_with_resume(sample: pd.DataFrame, scraped_cache_path: str, partial_ca
 
     # Scrape missing articles with progress bar and periodic saves
     for k, i in enumerate(tqdm(missing_idx, desc="Scraping")):
-        url = scraped.at[i, "url"]
-        scraped.at[i, "text"] = fetch_article_text(url)
+        news_url = scraped.at[i, "news_url"]
+        scraped.at[i, "text"] = fetch_article_text(news_url)
 
         if (k + 1) % save_every == 0:
             scraped.to_parquet(partial_cache_path, index=False)
