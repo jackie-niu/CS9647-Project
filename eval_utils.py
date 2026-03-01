@@ -1,21 +1,18 @@
 import numpy as np
-from sklearn.metrics import confusion_matrix, classification_report
+import pandas as pd
+from sklearn.metrics import classification_report, confusion_matrix
 
-# Helper function to print confusion matrix and classification report for given true and predicted labels
-def print_classification(y_true, y_pred):
-    print("Confusion matrix:\n", confusion_matrix(y_true, y_pred))
-    print("\nClassification report:\n", classification_report(y_true, y_pred, digits=3))
+def summarize_predictions(df, y_true, y_pred, text_col="text", k=25):
+    cm = confusion_matrix(y_true, y_pred)
+    report = classification_report(y_true, y_pred, digits=4)
 
-# Function for HuggingFace Trainer
-# Given metric objects for accuracy, f1, precision, and recall
-def hf_compute_metrics_factory(metric_acc, metric_f1, metric_precision, metric_recall):
-    def compute_metrics(eval_pred):
-        logits, labels = eval_pred
-        preds = np.argmax(logits, axis=-1)
-        return {
-            "accuracy": metric_acc.compute(predictions=preds, references=labels)["accuracy"],
-            "f1": metric_f1.compute(predictions=preds, references=labels, average="binary")["f1"],
-            "precision": metric_precision.compute(predictions=preds, references=labels, average="binary")["precision"],
-            "recall": metric_recall.compute(predictions=preds, references=labels, average="binary")["recall"],
-        }
-    return compute_metrics
+    # Misclassified examples for error analysis
+    err = df.copy()
+    err = err.assign(y_true=y_true, y_pred=y_pred)
+    err = err[err["y_true"] != err["y_pred"]].copy()
+    err["text_snippet"] = err[text_col].astype(str).str.replace("\n", " ").str.slice(0, 300)
+
+    # return top-k errors
+    err_view = err[["dataset", "source", "headline", "y_true", "y_pred", "text_snippet"]].head(k)
+
+    return cm, report, err_view

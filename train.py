@@ -1,190 +1,175 @@
 import os
 import argparse
+import numpy as np
 import pandas as pd
 
 import torch
-import evaluate
-from datasets import Dataset, load_from_disk
-from transformers import (
-    AutoTokenizer,
-    AutoModelForSequenceClassification,
-    TrainingArguments,
-    Trainer,
-)
+from sklearn.model_selection import train_test_split
 
-from config import DEFAULT_CACHE_ROOT, paths
-from data_prep import load_or_build_raw_fakenewsnet, filter_and_sample, split_train_val_test
-from scrape_cache import scrape_with_resume
+from datasets import Dataset
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
+
+from data_prep import load_fakenewsnet_kaggle
 from baseline import run_baselines
-from eval_utils import hf_compute_metrics_factory, print_classification
+from eval_utils import summarize_predictions
 
-# Ensure repo is cloned before data prep to access CSVs, and before scrape to save cache in repo dir. 
-def ensure_repo_cloned():
-    if not os.path.exists("FakeNewsNet"):
-        print("[setup] Cloning FakeNewsNet repo...")
-        os.system("rm -rf FakeNewsNet")
-        os.system("git clone -q https://github.com/KaiDMML/FakeNewsNet.git")
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    preds = np.argmax(logits, axis=1)
 
-# Convert a DataFrame with 'text' and 'label' columns to a HuggingFace Dataset
-def to_hf_dataset(df: pd.DataFrame) -> Dataset:
-    return Dataset.from_pandas(df[["text", "label"]].reset_index(drop=True))
+    from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+    acc = accuracy_score(labels, preds)
+    p, r, f1, _ = precision_recall_fscore_support(labels, preds, average="binary")
+    return {"accuracy": acc, "precision": p, "recall": r, "f1": f1}
 
-# Tokenize the datasets with the specified tokenizer and max length, and cache the tokenized datasets to disk for future runs. If cached versions exist, load from disk instead of re-tokenizing.
-def tokenize_and_cache(train_df, val_df, test_df, tokenizer_name, max_len, tokenized_root):
-    safe_name = tokenizer_name.replace("/", "_")
-    base_dir = os.path.join(tokenized_root, f"{safe_name}_len{max_len}")
-    train_path = os.path.join(base_dir, "train")
-    val_path   = os.path.join(base_dir, "val")
-    test_path  = os.path.join(base_dir, "test")
-
-    if os.path.exists(train_path) and os.path.exists(val_path) and os.path.exists(test_path):
-        print("[tok] Loading tokenized datasets from cache...")
-        train_tok = load_from_disk(train_path).with_format("torch")
-        val_tok   = load_from_disk(val_path).with_format("torch")
-        test_tok  = load_from_disk(test_path).with_format("torch")
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-        return tokenizer, train_tok, val_tok, test_tok
-
-    print("[tok] Tokenizing and caching datasets...")
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-
-    # Define tokenization function for mapping over the datasets
-    def tok(batch):
-        return tokenizer(batch["text"], truncation=True, padding="max_length", max_length=max_len)
-
-    train_tok = to_hf_dataset(train_df).map(tok, batched=True).remove_columns(["text"]).with_format("torch")
-    val_tok   = to_hf_dataset(val_df).map(tok, batched=True).remove_columns(["text"]).with_format("torch")
-    test_tok  = to_hf_dataset(test_df).map(tok, batched=True).remove_columns(["text"]).with_format("torch")
-
-    os.makedirs(base_dir, exist_ok=True)
-    train_tok.save_to_disk(train_path)
-    val_tok.save_to_disk(val_path)
-    test_tok.save_to_disk(test_path)
-    print(f"[tok] Saved tokenized datasets to: {base_dir}")
-
-    return tokenizer, train_tok, val_tok, test_tok
 
 def main():
-    # Argument parsing
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cache_root", type=str, default=DEFAULT_CACHE_ROOT)
-    parser.add_argument("--subset", type=str, default="both", choices=["politifact", "gossipcop", "both"])
-    parser.add_argument("--n", type=int, default=5000, help="Number of rows to sample (0 = all)")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--root_dir", type=str, default=".", help="Project root containing FakeNewsNet/ folder")
+    parser.add_argument("--cache_root", type=str, default="/content/drive/MyDrive/fakenewsnet_cache")
+
+    parser.add_argument("--use_dataset", type=str, default="both", choices=["both", "BuzzFeed", "PolitiFact"])
+    parser.add_argument("--text_col", type=str, default="combined_text", choices=["combined_text", "text", "title"])
 
     parser.add_argument("--model", type=str, default="distilbert-base-uncased")
     parser.add_argument("--max_len", type=int, default=256)
-
-    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--lr", type=float, default=2e-5)
-    parser.add_argument("--train_bs", type=int, default=16)
-    parser.add_argument("--eval_bs", type=int, default=32)
 
-    parser.add_argument("--save_total_limit", type=int, default=2)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--test_size", type=float, default=0.15)
+    parser.add_argument("--val_size", type=float, default=0.15)
     parser.add_argument("--run_baselines", action="store_true")
-    parser.add_argument("--resume", action="store_true")
 
     args = parser.parse_args()
 
-    # Sanity check GPU availability and print GPU info if available
-    print("GPU available:", torch.cuda.is_available())
-    if torch.cuda.is_available():
-        print("GPU:", torch.cuda.get_device_name(0))
+    # Ensure relative paths resolve from this file’s directory
+    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(PROJECT_ROOT)
 
-    p = paths(args.cache_root)
-    os.makedirs(p["tokenized_root"], exist_ok=True)
-    os.makedirs(p["ckpt_root"], exist_ok=True)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
-    ensure_repo_cloned()
+    gpu_ok = torch.cuda.is_available()
+    print("GPU available:", gpu_ok)
 
-    # 1) Raw dataset
-    raw = load_or_build_raw_fakenewsnet(p["raw_csv"])
-    sample = filter_and_sample(raw, subset=args.subset, n=args.n, seed=args.seed)
+    os.makedirs(args.cache_root, exist_ok=True)
+    raw_cache = os.path.join(args.cache_root, "kaggle_fakenewsnet_combined.csv")
 
-    # 2) Scrape
-    scraped = scrape_with_resume(
-        sample=sample,
-        scraped_cache_path=p["scraped_parquet"],
-        partial_cache_path=p["scrape_partial"],
-        save_every=50,
+    # -------- Load dataset (cached) --------
+    if os.path.exists(raw_cache):
+        df = pd.read_csv(raw_cache)
+        print(f"[data] Loaded cached dataset: {raw_cache} (rows={len(df)})")
+    else:
+        df = load_fakenewsnet_kaggle(args.root_dir, cache_csv=raw_cache)
+        print(f"[data] Built and cached dataset: {raw_cache} (rows={len(df)})")
+
+    if args.use_dataset != "both":
+        df = df[df["dataset"] == args.use_dataset].reset_index(drop=True)
+
+    # Some rows may still have empty text_col after cleaning; drop just in case
+    df[args.text_col] = df[args.text_col].fillna("").astype(str)
+    df = df[df[args.text_col].str.strip().str.len() > 0].reset_index(drop=True)
+
+    # -------- Split train/val/test (stratified) --------
+    y = df["label"].to_numpy()
+    train_df, temp_df = train_test_split(
+        df, test_size=(args.test_size + args.val_size),
+        random_state=args.seed, stratify=y
+    )
+    y_temp = temp_df["label"].to_numpy()
+    rel_test = args.test_size / (args.test_size + args.val_size)
+    val_df, test_df = train_test_split(
+        temp_df, test_size=rel_test,
+        random_state=args.seed, stratify=y_temp
     )
 
-    # 3) Split
-    train_df, val_df, test_df = split_train_val_test(scraped, seed=args.seed)
     print(f"[split] train={len(train_df)} val={len(val_df)} test={len(test_df)}")
+    print("[split] train label counts:", train_df["label"].value_counts().to_dict())
 
-    # Baseline
+    # -------- Baselines --------
     if args.run_baselines:
-        base_results = run_baselines(train_df, test_df)
-        print("\n[baseline results]")
-        for k, v in base_results.items():
-            print(k, v)
+        base = run_baselines(train_df, test_df, text_col=args.text_col)
+        print("\n[baseline] TF-IDF + Logistic Regression\n", base["tfidf_lr"]["report"])
+        print("[baseline] LR metrics:", {k: base["tfidf_lr"][k] for k in ["accuracy","precision","recall","f1"]})
 
-    # 4) Tokenize (cached)
-    tokenizer, train_tok, val_tok, test_tok = tokenize_and_cache(
-        train_df, val_df, test_df,
-        tokenizer_name=args.model,
-        max_len=args.max_len,
-        tokenized_root=p["tokenized_root"],
-    )
+        print("\n[baseline] TF-IDF + Linear SVM\n", base["tfidf_svm"]["report"])
+        print("[baseline] SVM metrics:", {k: base["tfidf_svm"][k] for k in ["accuracy","precision","recall","f1"]})
 
-    # 5) Train with HuggingFace Trainer 
-    metric_f1 = evaluate.load("f1")
-    metric_acc = evaluate.load("accuracy")
-    metric_precision = evaluate.load("precision")
-    metric_recall = evaluate.load("recall")
-    compute_metrics = hf_compute_metrics_factory(metric_acc, metric_f1, metric_precision, metric_recall)
+    # -------- Transformer fine-tuning --------
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+
+    def tok(batch):
+        return tokenizer(
+            batch["text"],
+            truncation=True,
+            padding="max_length",
+            max_length=args.max_len
+        )
+
+    # HuggingFace datasets need column named "text"
+    train_hf = Dataset.from_pandas(train_df[[args.text_col, "label"]].rename(columns={args.text_col: "text"}).reset_index(drop=True))
+    val_hf   = Dataset.from_pandas(val_df[[args.text_col, "label"]].rename(columns={args.text_col: "text"}).reset_index(drop=True))
+    test_hf  = Dataset.from_pandas(test_df[[args.text_col, "label"]].rename(columns={args.text_col: "text"}).reset_index(drop=True))
+
+    train_tok = train_hf.map(tok, batched=True).remove_columns(["text"]).rename_column("label", "labels")
+    val_tok   = val_hf.map(tok, batched=True).remove_columns(["text"]).rename_column("label", "labels")
+    test_tok  = test_hf.map(tok, batched=True).remove_columns(["text"]).rename_column("label", "labels")
 
     model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=2)
 
-    safe_model = args.model.replace("/", "_")
-    run_dir = os.path.join(p["ckpt_root"], f"{safe_model}_len{args.max_len}_{args.subset}_n{args.n}")
+    run_dir = os.path.join(args.cache_root, "runs", f"{args.model.replace('/','_')}_{args.use_dataset}_{args.text_col}")
     os.makedirs(run_dir, exist_ok=True)
 
-    train_args = TrainingArguments(
+    training_args = TrainingArguments(
         output_dir=run_dir,
         evaluation_strategy="epoch",
         save_strategy="epoch",
         learning_rate=args.lr,
-        per_device_train_batch_size=args.train_bs,
-        per_device_eval_batch_size=args.eval_bs,
+        per_device_train_batch_size=args.batch,
+        per_device_eval_batch_size=args.batch,
         num_train_epochs=args.epochs,
         weight_decay=0.01,
         load_best_model_at_end=True,
         metric_for_best_model="f1",
-        fp16=torch.cuda.is_available(),
-        logging_steps=50,
-        save_total_limit=args.save_total_limit,
+        fp16=gpu_ok,
         report_to="none",
+        save_total_limit=2,
+        seed=args.seed,
     )
 
     trainer = Trainer(
         model=model,
-        args=train_args,
+        args=training_args,
         train_dataset=train_tok,
         eval_dataset=val_tok,
         tokenizer=tokenizer,
         compute_metrics=compute_metrics,
     )
 
-    print(f"[train] checkpoints: {run_dir}")
-    trainer.train(resume_from_checkpoint=args.resume if args.resume else None)
+    trainer.train()
 
-    print("\n[test eval]")
-    test_metrics = trainer.evaluate(test_tok)
-    print(test_metrics)
-
-    # 6) Error analysis
+    # -------- Evaluate + error analysis --------
     pred = trainer.predict(test_tok)
-    y_true = pred.label_ids
-    y_pred = pred.predictions.argmax(axis=1)
-    print_classification(y_true, y_pred)
+    logits = pred.predictions
+    y_true = test_df["label"].to_numpy()
+    y_pred = np.argmax(logits, axis=1)
 
-    # 7) Export best model
-    export_dir = os.path.join(run_dir, "best_model_export")
-    trainer.save_model(export_dir)
-    tokenizer.save_pretrained(export_dir)
-    print(f"[export] Saved model+tokenizer to: {export_dir}")
+    cm, report, err_view = summarize_predictions(
+        test_df.reset_index(drop=True),
+        y_true, y_pred,
+        text_col=args.text_col,
+        k=25
+    )
+
+    print("\n[transformer] Confusion matrix:\n", cm)
+    print("\n[transformer] Classification report:\n", report)
+
+    err_path = os.path.join(run_dir, "misclassified_examples.csv")
+    err_view.to_csv(err_path, index=False)
+    print(f"\n[error-analysis] Saved misclassified examples to: {err_path}")
+
 
 if __name__ == "__main__":
     main()
