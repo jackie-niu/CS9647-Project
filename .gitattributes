@@ -1,0 +1,2 @@
+MisinformationFakeNewsText/DataSet_Misinfo_FAKE.csv filter=lfs diff=lfs merge=lfs -text
+MisinformationFakeNewsText/DataSet_Misinfo_TRUE.csv filter=lfs diff=lfs merge=lfs -text
