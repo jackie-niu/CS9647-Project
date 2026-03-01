@@ -3,5 +3,6 @@
 *.ckpt filter=lfs diff=lfs merge=lfs -text
 *.pkl filter=lfs diff=lfs merge=lfs -text
 *.csv filter=lfs diff=lfs merge=lfs -text
+MisinformationFakeNewsText/*.csv filter=lfs diff=lfs merge=lfs -text
 MisinformationFakeNewsText/DataSet_Misinfo_FAKE.csv filter=lfs diff=lfs merge=lfs -text
 MisinformationFakeNewsText/DataSet_Misinfo_TRUE.csv filter=lfs diff=lfs merge=lfs -text
