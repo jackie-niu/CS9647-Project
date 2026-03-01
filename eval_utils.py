@@ -13,6 +13,6 @@ def summarize_predictions(df, y_true, y_pred, text_col="text", k=25):
     err["text_snippet"] = err[text_col].astype(str).str.replace("\n", " ").str.slice(0, 300)
 
     # return top-k errors
-    err_view = err[["dataset", "source", "headline", "y_true", "y_pred", "text_snippet"]].head(k)
-
+    err_view = err[["dataset", "source", "title", "y_true", "y_pred", "text_snippet"]].head(k)
+    
     return cm, report, err_view

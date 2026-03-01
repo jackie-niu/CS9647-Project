@@ -7,7 +7,7 @@ import torch
 from sklearn.model_selection import train_test_split
 
 from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
+from transformers import DataCollatorWithPadding, AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
 
 from data_prep import load_fakenewsnet_kaggle
 from baseline import run_baselines
@@ -57,7 +57,7 @@ def main():
     os.makedirs(args.cache_root, exist_ok=True)
     raw_cache = os.path.join(args.cache_root, "kaggle_fakenewsnet_combined.csv")
 
-    # -------- Load dataset (cached) --------
+    # -------- Load dataset --------
     if os.path.exists(raw_cache):
         df = pd.read_csv(raw_cache)
         print(f"[data] Loaded cached dataset: {raw_cache} (rows={len(df)})")
@@ -104,7 +104,6 @@ def main():
         return tokenizer(
             batch["text"],
             truncation=True,
-            padding="max_length",
             max_length=args.max_len
         )
 
@@ -124,7 +123,7 @@ def main():
 
     training_args = TrainingArguments(
         output_dir=run_dir,
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
         learning_rate=args.lr,
         per_device_train_batch_size=args.batch,
@@ -139,14 +138,16 @@ def main():
         seed=args.seed,
     )
 
+    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+    
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_tok,
         eval_dataset=val_tok,
-        tokenizer=tokenizer,
+        data_collator=data_collator,
         compute_metrics=compute_metrics,
-    )
+    )   
 
     trainer.train()
 
