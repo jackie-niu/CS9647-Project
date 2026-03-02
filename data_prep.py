@@ -1,53 +1,40 @@
 import os
 import pandas as pd
 
-REQUIRED_COLS = ["id", "title", "text", "url", "source", "publish_date"]
 
-def load_news_csv(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    # Ensure required columns exist
-    missing = [c for c in ["id", "title", "text", "url", "source"] if c not in df.columns]
+def load_pheme_csv(root_dir: str, csv_rel_path: str = "PHEME/pheme_reactions_3col.csv",
+                   cache_csv: str | None = None) -> pd.DataFrame:
+
+    # Load the PHEME dataset from a CSV file, with some cleaning and validation.
+    csv_path = os.path.join(root_dir, csv_rel_path)
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"Could not find PHEME CSV at: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+
+    required = {"text", "label"}
+    missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"{os.path.basename(path)} missing columns: {missing}. Found: {list(df.columns)}")
+        raise ValueError(f"PHEME CSV missing columns: {missing}. Found: {list(df.columns)}")
 
-    # Normalize types
-    df["title"] = df["title"].fillna("").astype(str)
-    df["text"]  = df["text"].fillna("").astype(str)
-    df["url"]   = df["url"].fillna("").astype(str)
-    df["source"] = df["source"].fillna("").astype(str)
+    out = pd.DataFrame()
+    out["text"] = df["text"].fillna("").astype(str).str.strip()
 
-    # Combine title + text (main model input)
-    df["combined_text"] = (df["title"].str.strip() + "\n\n" + df["text"].str.strip()).str.strip()
+    # source text (keeping optional for now)
+    # out["source_text"] = df["source_text"].fillna("").astype(str).str.strip() if "source_text" in df.columns else ""
 
-    # Drop empty combined text
-    df = df[df["combined_text"].str.len() > 0].reset_index(drop=True)
-    return df
+    # label is already 0/1 after create_pheme.ipynb processing
+    out["is_misinformation"] = pd.to_numeric(df["label"], errors="coerce")
 
+    # clean just in case, and ensure it's int
+    out = out.dropna(subset=["is_misinformation"]).copy()
+    out["is_misinformation"] = out["is_misinformation"].astype(int)
 
-def load_fakenewsnet_kaggle(root_dir: str, cache_csv: str | None = None) -> pd.DataFrame:
-    # Define file paths for the 4 CSVs (fake/real for BuzzFeed and PolitiFact)
-    files = {
-        ("BuzzFeed", 1): os.path.join(root_dir, "FakeNewsNet", "BuzzFeed_fake_news_content.csv"),
-        ("BuzzFeed", 0): os.path.join(root_dir, "FakeNewsNet", "BuzzFeed_real_news_content.csv"),
-        ("PolitiFact", 1): os.path.join(root_dir, "FakeNewsNet", "PolitiFact_fake_news_content.csv"),
-        ("PolitiFact", 0): os.path.join(root_dir, "FakeNewsNet", "PolitiFact_real_news_content.csv"),
-    }
+    # keep only 0/1
+    out = out[out["is_misinformation"].isin([0, 1])].copy()
 
-    frames = []
-    for (dataset, label), path in files.items():
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Missing: {path}")
-
-        df = load_news_csv(path)
-        df["dataset"] = dataset
-        df["label"] = int(label)
-        frames.append(df)
-
-    out = pd.concat(frames, ignore_index=True)
-
-    # Keep only relevant columns
-    keep = [c for c in ["dataset", "id", "title", "text", "combined_text", "url", "source", "publish_date", "label"] if c in out.columns]
-    out = out[keep].copy()
+    # drop empty text
+    out = out[out["text"].str.len() > 0].reset_index(drop=True)
 
     if cache_csv:
         os.makedirs(os.path.dirname(cache_csv), exist_ok=True)
