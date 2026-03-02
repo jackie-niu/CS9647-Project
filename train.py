@@ -2,22 +2,27 @@ import os
 import argparse
 import numpy as np
 import pandas as pd
-
 import torch
 from sklearn.model_selection import train_test_split
-
+import transformers
+from packaging import version
 from datasets import Dataset
-from transformers import DataCollatorWithPadding, AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
-
-from data_prep import load_fakenewsnet_kaggle
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+    DataCollatorWithPadding,
+)
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from data_prep import load_pheme_csv
 from baseline import run_baselines
 from eval_utils import summarize_predictions
 
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     preds = np.argmax(logits, axis=1)
-
-    from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+    
     acc = accuracy_score(labels, preds)
     p, r, f1, _ = precision_recall_fscore_support(labels, preds, average="binary")
     return {"accuracy": acc, "precision": p, "recall": r, "f1": f1}
@@ -25,15 +30,13 @@ def compute_metrics(eval_pred):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root_dir", type=str, default=".", help="Project root containing FakeNewsNet/ folder")
-    parser.add_argument("--cache_root", type=str, default="/content/drive/MyDrive/fakenewsnet_cache")
-
-    parser.add_argument("--use_dataset", type=str, default="both", choices=["both", "BuzzFeed", "PolitiFact"])
-    parser.add_argument("--text_col", type=str, default="combined_text", choices=["combined_text", "text", "title"])
+    parser.add_argument("--root_dir", type=str, default=".", help="Project root containing PHEME/ folder")
+    parser.add_argument("--pheme_csv", type=str, default="PHEME/pheme_reactions_3col.csv")
+    parser.add_argument("--cache_root", type=str, default="/content/drive/MyDrive/pheme_cache")
 
     parser.add_argument("--model", type=str, default="distilbert-base-uncased")
-    parser.add_argument("--max_len", type=int, default=256)
-    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--max_len", type=int, default=128)  
+    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--lr", type=float, default=2e-5)
 
@@ -41,10 +44,8 @@ def main():
     parser.add_argument("--test_size", type=float, default=0.15)
     parser.add_argument("--val_size", type=float, default=0.15)
     parser.add_argument("--run_baselines", action="store_true")
-
     args = parser.parse_args()
 
-    # Ensure relative paths resolve from this file’s directory
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
     os.chdir(PROJECT_ROOT)
 
@@ -55,75 +56,72 @@ def main():
     print("GPU available:", gpu_ok)
 
     os.makedirs(args.cache_root, exist_ok=True)
-    raw_cache = os.path.join(args.cache_root, "kaggle_fakenewsnet_combined.csv")
+    raw_cache = os.path.join(args.cache_root, "pheme_clean.csv")
 
-    # -------- Load dataset --------
+    # Load dataset
     if os.path.exists(raw_cache):
         df = pd.read_csv(raw_cache)
         print(f"[data] Loaded cached dataset: {raw_cache} (rows={len(df)})")
     else:
-        df = load_fakenewsnet_kaggle(args.root_dir, cache_csv=raw_cache)
+        df = load_pheme_csv(args.root_dir, csv_rel_path=args.pheme_csv, cache_csv=raw_cache)
         print(f"[data] Built and cached dataset: {raw_cache} (rows={len(df)})")
 
-    if args.use_dataset != "both":
-        df = df[df["dataset"] == args.use_dataset].reset_index(drop=True)
+    # Basic sanity
+    print("[data] label counts:", df["is_misinformation"].value_counts().to_dict())
 
-    # Some rows may still have empty text_col after cleaning; drop just in case
-    df[args.text_col] = df[args.text_col].fillna("").astype(str)
-    df = df[df[args.text_col].str.strip().str.len() > 0].reset_index(drop=True)
-
-    # -------- Split train/val/test (stratified) --------
-    y = df["label"].to_numpy()
+    # Split into train/val/test
+    y = df["is_misinformation"].to_numpy()
     train_df, temp_df = train_test_split(
         df, test_size=(args.test_size + args.val_size),
         random_state=args.seed, stratify=y
     )
-    y_temp = temp_df["label"].to_numpy()
+    y_temp = temp_df["is_misinformation"].to_numpy()
     rel_test = args.test_size / (args.test_size + args.val_size)
+
     val_df, test_df = train_test_split(
         temp_df, test_size=rel_test,
         random_state=args.seed, stratify=y_temp
     )
 
     print(f"[split] train={len(train_df)} val={len(val_df)} test={len(test_df)}")
-    print("[split] train label counts:", train_df["label"].value_counts().to_dict())
+    print("[split] train label counts:", train_df["is_misinformation"].value_counts().to_dict())
 
-    # -------- Baselines --------
+    # Baselines
     if args.run_baselines:
-        base = run_baselines(train_df, test_df, text_col=args.text_col)
+        base = run_baselines(train_df, test_df, text_col="text", label_col="is_misinformation")
         print("\n[baseline] TF-IDF + Logistic Regression\n", base["tfidf_lr"]["report"])
         print("[baseline] LR metrics:", {k: base["tfidf_lr"][k] for k in ["accuracy","precision","recall","f1"]})
 
         print("\n[baseline] TF-IDF + Linear SVM\n", base["tfidf_svm"]["report"])
         print("[baseline] SVM metrics:", {k: base["tfidf_svm"][k] for k in ["accuracy","precision","recall","f1"]})
 
-    # -------- Transformer fine-tuning --------
+    # Transformer-based model fine-tuning
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     def tok(batch):
-        return tokenizer(
-            batch["text"],
-            truncation=True,
-            max_length=args.max_len
-        )
+        return tokenizer(batch["text"], truncation=True, max_length=args.max_len)
 
-    # HuggingFace datasets need column named "text"
-    train_hf = Dataset.from_pandas(train_df[[args.text_col, "label"]].rename(columns={args.text_col: "text"}).reset_index(drop=True))
-    val_hf   = Dataset.from_pandas(val_df[[args.text_col, "label"]].rename(columns={args.text_col: "text"}).reset_index(drop=True))
-    test_hf  = Dataset.from_pandas(test_df[[args.text_col, "label"]].rename(columns={args.text_col: "text"}).reset_index(drop=True))
+    # HuggingFace dataset expects labels column = "labels" later
+    train_hf = Dataset.from_pandas(train_df[["text", "is_misinformation", "source_text"]].rename(columns={"is_misinformation": "label"}).reset_index(drop=True))
+    val_hf   = Dataset.from_pandas(val_df[["text", "is_misinformation", "source_text"]].rename(columns={"is_misinformation": "label"}).reset_index(drop=True))
+    test_hf  = Dataset.from_pandas(test_df[["text", "is_misinformation", "source_text"]].rename(columns={"is_misinformation": "label"}).reset_index(drop=True))
 
-    train_tok = train_hf.map(tok, batched=True).remove_columns(["text"]).rename_column("label", "labels")
-    val_tok   = val_hf.map(tok, batched=True).remove_columns(["text"]).rename_column("label", "labels")
-    test_tok  = test_hf.map(tok, batched=True).remove_columns(["text"]).rename_column("label", "labels")
+    train_tok = train_hf.map(tok, batched=True).remove_columns(["text", "source_text"]).rename_column("label", "labels")
+    val_tok   = val_hf.map(tok, batched=True).remove_columns(["text", "source_text"]).rename_column("label", "labels")
+    test_tok  = test_hf.map(tok, batched=True).remove_columns(["text", "source_text"]).rename_column("label", "labels")
 
+    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
     model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=2)
 
-    run_dir = os.path.join(args.cache_root, "runs", f"{args.model.replace('/','_')}_{args.use_dataset}_{args.text_col}")
+    run_dir = os.path.join(args.cache_root, "runs", f"{args.model.replace('/','_')}_pheme")
     os.makedirs(run_dir, exist_ok=True)
 
-    training_args = TrainingArguments(
+    # Transformers version compatibility for eval arg
+    
+    use_new = version.parse(transformers.__version__) >= version.parse("4.46.0")
+
+    kwargs = dict(
         output_dir=run_dir,
-        eval_strategy="epoch",
         save_strategy="epoch",
         learning_rate=args.lr,
         per_device_train_batch_size=args.batch,
@@ -137,9 +135,13 @@ def main():
         save_total_limit=2,
         seed=args.seed,
     )
+    if use_new:
+        kwargs["eval_strategy"] = "epoch"
+    else:
+        kwargs["evaluation_strategy"] = "epoch"
 
-    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
-    
+    training_args = TrainingArguments(**kwargs)
+
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -147,21 +149,21 @@ def main():
         eval_dataset=val_tok,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-    )   
+    )
 
     trainer.train()
 
-    # -------- Evaluate + error analysis --------
+    # Test evaluation and error analysis
     pred = trainer.predict(test_tok)
     logits = pred.predictions
-    y_true = test_df["label"].to_numpy()
+    y_true = test_df["is_misinformation"].to_numpy()
     y_pred = np.argmax(logits, axis=1)
 
     cm, report, err_view = summarize_predictions(
         test_df.reset_index(drop=True),
         y_true, y_pred,
-        text_col=args.text_col,
-        k=25
+        text_col="text",
+        k=30
     )
 
     print("\n[transformer] Confusion matrix:\n", cm)
