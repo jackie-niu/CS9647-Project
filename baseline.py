@@ -5,11 +5,11 @@ from sklearn.svm import LinearSVC
 from sklearn.metrics import classification_report, f1_score, accuracy_score, precision_score, recall_score
 
 
-def run_baselines(train_df, test_df, text_col="combined_text"):
+def run_baselines(train_df, test_df, text_col="text", label_col="is_misinformation"):
     X_train = train_df[text_col].fillna("").astype(str).tolist()
     X_test  = test_df[text_col].fillna("").astype(str).tolist()
-    y_train = train_df["label"].to_numpy()
-    y_test  = test_df["label"].to_numpy()
+    y_train = train_df[label_col].to_numpy()
+    y_test  = test_df[label_col].to_numpy()
 
     if len(np.unique(y_train)) < 2:
         raise ValueError(f"Baseline training split has only one class: {np.unique(y_train)}")
@@ -20,7 +20,7 @@ def run_baselines(train_df, test_df, text_col="combined_text"):
 
     results = {}
 
-    # Logistic Regression
+    # Logistic Regression with class weights to handle imbalance
     lr = LogisticRegression(max_iter=3000, n_jobs=-1, class_weight="balanced")
     lr.fit(Xtr, y_train)
     pred_lr = lr.predict(Xte)
@@ -32,7 +32,7 @@ def run_baselines(train_df, test_df, text_col="combined_text"):
         "report": classification_report(y_test, pred_lr, digits=4),
     }
 
-    # Linear SVM
+    # Linear SVM with class weights to handle imbalance
     svm = LinearSVC(class_weight="balanced")
     svm.fit(Xtr, y_train)
     pred_svm = svm.predict(Xte)

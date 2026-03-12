@@ -4,8 +4,7 @@ import pandas as pd
 
 def load_pheme_csv(root_dir: str, csv_rel_path: str = "PHEME/pheme_reactions_3col.csv",
                    cache_csv: str | None = None) -> pd.DataFrame:
-
-    # Load the PHEME dataset from a CSV file, with some cleaning and validation.
+    
     csv_path = os.path.join(root_dir, csv_rel_path)
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Could not find PHEME CSV at: {csv_path}")
@@ -20,13 +19,13 @@ def load_pheme_csv(root_dir: str, csv_rel_path: str = "PHEME/pheme_reactions_3co
     out = pd.DataFrame()
     out["text"] = df["text"].fillna("").astype(str).str.strip()
 
-    # source text (keeping optional for now)
-    # out["source_text"] = df["source_text"].fillna("").astype(str).str.strip() if "source_text" in df.columns else ""
+    # optional column
+    out["source_text"] = df["source_text"].fillna("").astype(str).str.strip() if "source_text" in df.columns else ""
 
-    # label is already 0/1 after create_pheme.ipynb processing
+    # label is already 0/1 in CSV
     out["is_misinformation"] = pd.to_numeric(df["label"], errors="coerce")
 
-    # clean just in case, and ensure it's int
+    # clean
     out = out.dropna(subset=["is_misinformation"]).copy()
     out["is_misinformation"] = out["is_misinformation"].astype(int)
 
