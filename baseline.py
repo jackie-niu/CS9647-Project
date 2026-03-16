@@ -2,7 +2,7 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import LinearSVC
-from sklearn.metrics import classification_report, f1_score, accuracy_score, precision_score, recall_score
+from sklearn.metrics import classification_report, f1_score, accuracy_score, precision_score, recall_score, confusion_matrix
 
 
 def run_baselines(train_df, test_df, text_col="text", label_col="is_misinformation"):
@@ -30,6 +30,9 @@ def run_baselines(train_df, test_df, text_col="text", label_col="is_misinformati
         "recall": float(recall_score(y_test, pred_lr)),
         "f1": float(f1_score(y_test, pred_lr)),
         "report": classification_report(y_test, pred_lr, digits=4),
+        "confusion_matrix": confusion_matrix(y_test, pred_lr),
+        "y_true": y_test,
+        "y_pred": pred_lr,
     }
 
     # Linear SVM with class weights to handle imbalance
@@ -42,6 +45,9 @@ def run_baselines(train_df, test_df, text_col="text", label_col="is_misinformati
         "recall": float(recall_score(y_test, pred_svm)),
         "f1": float(f1_score(y_test, pred_svm)),
         "report": classification_report(y_test, pred_svm, digits=4),
+        "confusion_matrix": confusion_matrix(y_test, pred_svm),
+        "y_true": y_test,
+        "y_pred": pred_svm,
     }
 
     return results

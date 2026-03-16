@@ -95,6 +95,21 @@ def main():
         print("\n[baseline] TF-IDF + Linear SVM\n", base["tfidf_svm"]["report"])
         print("[baseline] SVM metrics:", {k: base["tfidf_svm"][k] for k in ["accuracy","precision","recall","f1"]})
 
+    # Save baseline confusion matrices for later analysis
+    baseline_dir = os.path.join(args.cache_root, "baseline_outputs")
+    os.makedirs(baseline_dir, exist_ok=True)
+
+    np.save(os.path.join(baseline_dir, "lr_confusion_matrix.npy"), base["tfidf_lr"]["confusion_matrix"])
+    np.save(os.path.join(baseline_dir, "svm_confusion_matrix.npy"), base["tfidf_svm"]["confusion_matrix"])
+
+    print("[baseline] Saved confusion matrices to:", baseline_dir)
+
+    with open(os.path.join(baseline_dir, "lr_report.txt"), "w") as f:
+        f.write(base["tfidf_lr"]["report"])
+
+    with open(os.path.join(baseline_dir, "svm_report.txt"), "w") as f:
+        f.write(base["tfidf_svm"]["report"])
+
     # Transformer-based model fine-tuning
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
