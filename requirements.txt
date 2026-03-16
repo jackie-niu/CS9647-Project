@@ -9,3 +9,4 @@ tqdm
 newspaper3k 
 lxml_html_clean
 packaging
+torch

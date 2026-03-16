@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
-import transformers
 from packaging import version
 from datasets import Dataset
 from transformers import (
