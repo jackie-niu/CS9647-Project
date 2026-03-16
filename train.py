@@ -3,6 +3,7 @@ import argparse
 import numpy as np
 import pandas as pd
 import torch
+import transformers
 from sklearn.model_selection import train_test_split
 from packaging import version
 from datasets import Dataset
